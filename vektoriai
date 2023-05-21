@@ -1,0 +1,407 @@
+#ifndef VEKTORIUS_H
+#define VEKTORIUS_H
+
+#include <iostream>
+#include <memory>
+#include <algorithm>
+#include <stdexcept>
+#include <iterator>
+#include <vector>
+
+template <class T>
+class vektorius {
+public:
+    typedef T* iterator;
+    typedef const T* const_iterator;
+    typedef size_t size_type;
+    typedef T value_type;
+    typedef std::reverse_iterator<iterator> reverse_iterator;
+    typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
+
+    // member functions
+    vektorius() { create(); }
+    explicit vektorius(size_type n, const T& val = T{}) { create(n, val); }
+    vektorius(const vektorius& v) { create(v.begin(), v.end()); } // copy constructor
+    vektorius<T>& operator=(const vektorius& rhs); // assignment constructor
+    ~vektorius() { uncreate(); }
+
+    void assign(size_type n, const T& val)
+    {
+        clear();
+        insert(begin(), n, val);
+    }
+
+    template <class InputIt>
+    void assign(InputIt first, InputIt last)
+    {
+        clear();
+        insert(begin(), first, last);
+    }
+
+    allocator<T> get_allocator() { return alloc; }
+
+    // element access
+    T& at(size_type pos)
+    {
+        if (data_ + pos < avail)
+            return *(data_ + pos);
+        else
+            throw std::out_of_range("Index out of range!");
+    }
+
+    const T& at(size_type pos) const
+    {
+        if (pos >= size())
+            throw std::out_of_range("Index out of range!");
+        return *(data_ + pos);
+    }
+
+    T& operator[](size_type i) { return data_[i]; }
+    const T& operator[](size_type i) const { return data_[i]; }
+    T& front() { return *data_; }
+    T& back() { return *(avail - 1); }
+    T* data() { return data_; }
+
+    // iterators
+    iterator begin() { return data_; }
+    const_iterator begin() const { return data_; }
+    const_iterator cbegin() const noexcept { return data_; }
+    iterator end() { return avail; }
+    const_iterator end() const { return avail; }
+    const_iterator cend() const noexcept { return avail; }
+    reverse_iterator rbegin() { return reverse_iterator(end()); }
+    const_reverse_iterator rbegin() const { return const_reverse_iterator(end()); }
+    reverse_iterator rend() { return reverse_iterator(begin()); }
+    const_reverse_iterator rend() const { return const_reverse_iterator(begin()); }
+
+    // capacity
+    bool empty() const { return begin() == end(); }
+    size_type size() const { return avail - data_; }
+    size_type max_size() const { return std::allocator_traits<allocator<T>>::max_size(alloc); }
+    void reserve(size_type new_limit);
+    size_type capacity() const { return limit - data_; }
+    void shrink_to_fit();
+
+    // modifiers
+    void clear();
+    iterator insert(iterator pos, const T& val);
+    iterator insert(const_iterator pos, T&& val);
+    iterator insert(const_iterator pos, size_type count, const T& value);
+    template <class InputIt>
+    iterator insert(const_iterator pos, InputIt first, InputIt last);
+    template <class... Args>
+    iterator emplace(const_iterator pos, Args&&... args);
+    iterator erase(iterator pos);
+    iterator erase(iterator first, iterator last);
+    void push_back(const T& val) { insert(end(), val); }
+    void push_back(T&& val) { insert(end(), std::move(val)); }
+    template <class... Args>
+    void emplace_back(Args&&... args);
+    void pop_back() { erase(end() - 1); }
+    void resize(size_type count, const T& value = T{});
+    void swap(vektorius& other) noexcept;
+
+    // relational operators
+    bool operator==(const vektorius<T>& rhs) const;
+    bool operator!=(const vektorius<T>& rhs) const { return !(*this == rhs); }
+
+private:
+    iterator data_; // first element in the array
+    iterator avail; // (one past) the last constructed element
+    iterator limit; // (one past) the allocated memory
+
+    std::allocator<T> alloc; // object to handle memory allocation
+
+    // allocate and initialize the underlying array
+    void create();
+    void create(size_type n, const T& val);
+    void create(const_iterator i, const_iterator j);
+
+    // destroy the elements in the array and free the memory
+    void uncreate();
+
+    // support functions for push_back
+    void grow();
+    void unchecked_append(const T& val);
+};
+
+template <class T>
+void vektorius<T>::create()
+{
+    data_ = avail = limit = nullptr;
+}
+
+template <class T>
+void vektorius<T>::create(size_type n, const T& val)
+{
+    data_ = alloc.allocate(n);
+    limit = avail = data_ + n;
+    std::uninitialized_fill(data_, limit, val);
+}
+
+template <class T>
+void vektorius<T>::create(const_iterator i, const_iterator j)
+{
+    data_ = alloc.allocate(j - i);
+    limit = avail = std::uninitialized_copy(i, j, data_);
+}
+
+template <class T>
+void vektorius<T>::uncreate()
+{
+    if (data_) {
+        // destroy (in reverse order) the constructed elements
+        iterator it = avail;
+        while (it != data_)
+            alloc.destroy(--it);
+
+        // return all the space that was allocated
+        alloc.deallocate(data_, limit - data_);
+    }
+    // reset pointers to indicate that the vektorius is empty again
+    data_ = limit = avail = nullptr;
+}
+
+template <class T>
+typename vektorius<T>::iterator vektorius<T>::insert(iterator pos, const T& val)
+{
+    // determine the position of pos in the vektorius
+    size_type index = pos - data_;
+
+    // insert the element at position pos
+    if (avail == limit)
+        grow();
+    // move elements to make room for val
+    std::uninitialized_copy_backward(pos, avail, avail + 1);
+
+    // construct a copy of val in the freed position
+    *pos = val;
+    ++avail;
+
+    // return the position of the inserted element
+    return data_ + index;
+}
+
+template <class T>
+typename vektorius<T>::iterator vektorius<T>::insert(const_iterator pos, T&& val)
+{
+    // determine the position of pos in the vektorius
+    size_type index = pos - data_;
+
+    // insert the element at position pos
+    if (avail == limit)
+        grow();
+    // move elements to make room for val
+    std::uninitialized_copy_backward(pos, avail, avail + 1);
+
+    // construct val in the freed position
+    *pos = std::move(val);
+    ++avail;
+
+    // return the position of the inserted element
+    return data_ + index;
+}
+
+template <class T>
+typename vektorius<T>::iterator vektorius<T>::insert(const_iterator pos, size_type count, const T& value)
+{
+    // determine the position of pos in the vektorius
+    size_type index = pos - data_;
+
+    // insert count copies of value at position pos
+    if (count > 0) {
+        if (limit - avail < count)
+            reserve(size() + count);
+
+        // move elements to make room for the new elements
+        std::uninitialized_copy_backward(pos, avail, avail + count);
+
+        // insert count copies of value
+        std::fill_n(pos, count, value);
+
+        // update avail
+        avail += count;
+    }
+
+    // return the position of the first inserted element
+    return data_ + index;
+}
+
+template <class T>
+template <class InputIt>
+typename vektorius<T>::iterator vektorius<T>::insert(const_iterator pos, InputIt first, InputIt last)
+{
+    // determine the position of pos in the vektorius
+    size_type index = pos - data_;
+
+    // insert elements from [first, last) at position pos
+    size_type count = std::distance(first, last);
+    if (count > 0) {
+        if (limit - avail < count)
+            reserve(size() + count);
+
+        // move elements to make room for the new elements
+        std::uninitialized_copy_backward(pos, avail, avail + count);
+
+        // insert elements from [first, last)
+        std::copy(first, last, pos);
+
+        // update avail
+        avail += count;
+    }
+
+    // return the position of the first inserted element
+    return data_ + index;
+}
+
+template <class T>
+template <class... Args>
+typename vektorius<T>::iterator vektorius<T>::emplace(const_iterator pos, Args&&... args)
+{
+    // determine the position of pos in the vektorius
+    size_type index = pos - data_;
+
+    // insert a new element at position pos
+    if (avail == limit)
+        grow();
+
+    // move elements to make room for the new element
+    std::uninitialized_copy_backward(pos, avail, avail + 1);
+
+    // construct the new element in the freed position
+    *(data_ + index) = T(std::forward<Args>(args)...);
+    ++avail;
+
+    // return the position of the inserted element
+    return data_ + index;
+}
+
+template <class T>
+typename vektorius<T>::iterator vektorius<T>::erase(iterator pos)
+{
+    if (pos != end()) {
+        // move elements to fill the gap
+        std::move(pos + 1, avail, pos);
+
+        // destroy the last element
+        alloc.destroy(avail - 1);
+
+        // update avail
+        --avail;
+    }
+
+    return pos;
+}
+
+template <class T>
+typename vektorius<T>::iterator vektorius<T>::erase(iterator first, iterator last)
+{
+    if (first != last) {
+        // move elements to fill the gap
+        iterator new_avail = std::move(last, avail, first);
+
+        // destroy the remaining elements
+        for (iterator it = new_avail; it != avail; ++it)
+            alloc.destroy(it);
+
+        // update avail
+        avail = new_avail;
+    }
+
+    return first;
+}
+
+template <class T>
+void vektorius<T>::clear()
+{
+    erase(begin(), end());
+}
+
+template <class T>
+void vektorius<T>::reserve(size_type new_limit)
+{
+    if (new_limit <= capacity())
+        return;
+
+    iterator new_data = alloc.allocate(new_limit);
+    iterator new_avail = std::uninitialized_copy(data_, avail, new_data);
+
+    uncreate();
+
+    data_ = new_data;
+    avail = new_avail;
+    limit = data_ + new_limit;
+}
+
+template <class T>
+void vektorius<T>::shrink_to_fit()
+{
+    if (limit > avail) {
+        iterator new_data = alloc.allocate(size());
+        iterator new_avail = std::uninitialized_copy(data_, avail, new_data);
+
+        uncreate();
+
+        data_ = new_data;
+        avail = new_avail;
+        limit = data_ + size();
+    }
+}
+
+template <class T>
+void vektorius<T>::grow()
+{
+    // allocate twice as much space as currently in use
+    size_type new_limit = std::max(2 * (limit - data_), ptrdiff_t(1));
+
+    // allocate new memory
+    iterator new_data = alloc.allocate(new_limit);
+    iterator new_avail = std::uninitialized_copy(data_, avail, new_data);
+
+    // deallocate old memory
+    uncreate();
+
+    // update pointers to new memory
+    data_ = new_data;
+    avail = new_avail;
+    limit = data_ + new_limit;
+}
+
+template <class T>
+template <class... Args>
+void vektorius<T>::emplace_back(Args&&... args)
+{
+    if (avail == limit)
+        grow();
+
+    unchecked_append(T(std::forward<Args>(args)...));
+}
+
+template <class T>
+void vektorius<T>::resize(size_type count, const T& value)
+{
+    if (count < size()) {
+        // erase elements beyond count
+        erase(begin() + count, end());
+    }
+    else if (count > size()) {
+        // insert elements at the end
+        insert(end(), count - size(), value);
+    }
+}
+
+template <class T>
+void vektorius<T>::swap(vektorius& other) noexcept
+{
+    std::swap(data_, other.data_);
+    std::swap(avail, other.avail);
+    std::swap(limit, other.limit);
+}
+
+template <class T>
+bool vektorius<T>::operator==(const vektorius<T>& rhs) const
+{
+    return size() == rhs.size() && std::equal(begin(), end(), rhs.begin());
+}
+
+#endif // VEKTORIUS_H
